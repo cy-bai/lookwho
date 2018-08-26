@@ -17,8 +17,8 @@ np.set_printoptions(threshold=np.nan)
 torch.manual_seed(1)
 np.random.seed(0)
 # cuda_avail = torch.cuda.is_available()
-cuda_avail = False
-print(torch.cuda.is_available())
+cuda_avail = True
+print('cuda', torch.cuda.is_available())
 
 # split test clips, leave 1 sec out
 def genTestCVIdx(game_data, leave_m=5):
@@ -145,7 +145,7 @@ def NNInit(N,D,w):
     tag_sz = N+1
     player_nns, params, criterions = [], [], []
     for i in range(N):
-        player_nns.append(NN(D, tag_sz))
+        player_nns.append(NN(D, tag_sz).cuda())
         params = params + list(player_nns[i].parameters())
         # player-dependent weights
         criterions.append(nn.CrossEntropyLoss(weight=w[i]))
@@ -159,26 +159,28 @@ def train(Xs, ys, w, layer_0_outs):
     # num of clips
     C = len(Xs)
     # initialization player nns, criterions, optimizer
+    w = w.cuda()
     player_nns, criterions, opt = NNInit(N,D,w)
     # training
     epoch_loss_lst = []
     for epoch in range(NEPOCH):
         running_loss = 0.
         for clip in range(C):
-            X,y = Xs[clip], ys[clip]
+            X,y = Xs[clip].cuda(), ys[clip].cuda()
             # init last layer's out
-            last_lay_out = layer_0_outs[clip]
+            last_lay_out = layer_0_outs[clip].cuda()
             # init t0 out as uniform distribution
             time_0_out = torch.ones(1+N).float()/(1+N)
+            time_0_out = time_0_out.cuda()
             # clear grad
             opt.zero_grad()
 
             loss_lst = []
             L_clip = y.size()[1]
             # each layer
-            print('forward clip:', clip, L_clip, 'frms')
+            # print('forward clip:', clip, L_clip, 'frms')
             for iter in range(NITER):
-                this_lay_out = torch.zeros(N, L_clip, N+1)
+                this_lay_out = torch.zeros(N, L_clip, N+1).cuda()
                 collect_last_lay_out = torch.cat([constructCollect(last_lay_out, ply) for ply in range(N)],dim=0)
                 for ply in range(N):
                     for t in range(L_clip):
@@ -199,7 +201,7 @@ def train(Xs, ys, w, layer_0_outs):
             clip_loss.backward()
             opt.step()
 
-            print(clip_loss.item())
+            # print(clip_loss.item())
             running_loss += clip_loss.item()
         # early stop
         if running_loss < STOP_L:
@@ -224,10 +226,11 @@ def constructCollect(lastlay_outs, ply):
     return collec_x.unsqueeze(0)
 
 def eval_layerForward(player_nns, last_lay_out, clip_X, clip_y):
-    N, L_clip, D = lastlay_out.size()
-    this_lay_out = torch.zeros_like(lastlay_out)
+    N, L_clip, D = last_lay_out.size()
+    this_lay_out = torch.zeros_like(last_lay_out).cuda()
     collect_last_lay_out = torch.cat([constructCollect(last_lay_out, ply) for ply in range(N)],0)
     time_0_out = torch.ones(1+N)/(1+N)
+    time_0_out = time_0_out.cuda()
     for ply in range(N):
         for t in range(L_clip):
             last_t_out = time_0_out if t ==0 else this_lay_out[ply,t-1,:]
@@ -237,9 +240,10 @@ def eval_layerForward(player_nns, last_lay_out, clip_X, clip_y):
     return this_lay_out
 
 def evalNNCC(player_nns, X,y,lay_0_out):
-#     print('eval', X.size(), y.size())
+    # print('eval', X.size(), y.size())
+    X = X.cuda()
     N,L,D=X.size()
-    last_lay_out = lay_0_out
+    last_lay_out = lay_0_out.cuda()
     for ply in range(N):
         player_nns[ply].eval()
     game_lay_acc = []
@@ -247,7 +251,7 @@ def evalNNCC(player_nns, X,y,lay_0_out):
         ply_lay_acc = []
         last_lay_out = eval_layerForward(player_nns, last_lay_out, X, y)
         for ply in range(N):
-            ply_lay_acc.append(computeNFrmACC(last_lay_out[ply].numpy(), y[ply].numpy()))
+            ply_lay_acc.append(computeNFrmACC(last_lay_out[ply].cpu().numpy(), y[ply].cpu().numpy()))
         game_lay_acc.append(np.mean(np.array(ply_lay_acc)))
     return game_lay_acc
 
@@ -257,7 +261,7 @@ feat_dict = {0:'m0_gaze1',1:'m1_gaze1',2:'m2_gaze1',3:'m1_gaze2',4:'m2_gaze2'}
 LR=0.1
 DECAY=0
 STOP_L=1
-NEPOCH=200
+NEPOCH=100
 NITER = 5
 
 for method in [4]:
