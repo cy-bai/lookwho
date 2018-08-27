@@ -7,9 +7,7 @@ parser.add_argument('--epochs', default=49, type=int, help='Number of epochs acr
 parser.add_argument('--time_granularity', default=10, type=int, help='Number of frames used for training and testing')
 parser.add_argument('--layer', default=3, type=int, help='Number of layers in the model')
 
-games = ['003SB','002ISR','004UMD','005NTU','006AZ']
-
-if args.game_id not in games:
+if args.game_id >= len(GAMES):
    print "GAME ID IS NOT VALID. EXITING"
    sys.exit(0)
 
@@ -30,13 +28,12 @@ np.random.seed(0)
 
 # print command line arguments
 # args: gameid [0-4], splitid [0-9]
-root_dir = 'data_10frm/'
+root_dir = 'data_%dfrm/'% args.time_granularity
 game_id = args.game_id
-split_id = int(args.split_id)
+game = GAMES[game_id]
+split_id = args.split_id
 print('gameid',game_id, 'splitid', split_id)
 
-
-feat_dict = {0:'m0_gaze1',1:'m1_gaze1',2:'m2_gaze1',3:'m1_gaze2',4:'m2_gaze2'}
 LR=1e-3
 WEIGHT_DECAY=1e-5
 STOP_L=0.5

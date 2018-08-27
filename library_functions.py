@@ -16,6 +16,11 @@ from torch.autograd import Variable
 import argparse
 import gpustat
 
+GAMES = ['003SB','002ISR','004UMD','005NTU','006AZ']
+NPLAYERS = [6,7,7,8,7]
+FEAT_DIM = [2,7,5,10,8]
+feat_dict = {0:'m0_gaze1',1:'m1_gaze1',2:'m2_gaze1',3:'m1_gaze2',4:'m2_gaze2'}
+
 # split test clips, leave 1 sec out
 def genTestCVIdx(game_data, leave_m=5):
     # N players, L time length, D feature dim
@@ -235,6 +240,7 @@ def train(Xs, ys, w, layer_0_outs, tes_X, tes_y, tes_lay0_out):
         for ply in range(N):
             filepath = '{}/model/{}_{}_{}_{}.pt'.format(root_dir, game_id, ply, split_id, epoch)
             torch.save(player_nns[ply].state_dict(), filepath)
+            # ADD FUNCTION
 
         #normalize by #clips
         running_loss /= C
@@ -280,22 +286,54 @@ def eval_layerForward(player_nns, last_lay_out, clip_X, clip_y):
             this_lay_out[ply,t,:] = F.softmax(out, dim=1)[0]
     return this_lay_out
 
-def evalNNCC(player_nns, X,y,lay_0_out):
+
+
+def evalNNCC(player_nns, criterions, X,y,lay_0_out):
     # print('eval', X.size(), y.size())
-    X = X.cuda()
+    X,y = X.cuda(),y.cuda()
     N,L,D=X.size()
     last_lay_out = lay_0_out.cuda()
     for ply in range(N):
         player_nns[ply].eval()
     game_lay_acc = []
+    game_lay_loss = []
     for iter in range(NITER):
         ply_lay_acc = []
+        ply_lay_loss = []
         last_lay_out = eval_layerForward(player_nns, last_lay_out, X, y)
         for ply in range(N):
-            ply_lay_acc.append(computeNFrmACC(last_lay_out[ply].cpu().numpy(), y[ply].cpu().numpy()))
-        game_lay_acc.append(smartMean(ply_lay_acc))
-    return game_lay_acc
+            sure_msk = y[ply, :] >= 0
+            if sure_msk.long().sum().item() > 0:
+                ply_lay_loss.append(criterions[ply](last_lay_out[ply, sure_msk, :], y[ply, sure_msk]))
+            for ply in range(N):
+                ply_lay_acc.append(computeNFrmACC(last_lay_out[ply].cpu().numpy(), y[ply].cpu().numpy()))
 
+        game_lay_acc.append(smartMean(ply_lay_acc))
+        game_lay_loss.append(np.mean(np.array(ply_lay_loss)))
+    return game_lay_loss, game_lay_acc
+
+def evalTrain(player_nns, criterions, Xs, ys, lay0_out):
+    torch.manual_seed(1)
+    # N players, L time length, D feature dim
+    # N, D = Xs[0].size()[0], Xs[0].size()[2]
+    # num of clips
+    C = len(Xs)
+    game_lay_acc = []
+    game_lay_loss = []
+    
+    running_loss = 0.
+    for clip in range(C):
+        clip_lay_loss, clip_lay_acc = evalNNCC(player_nns, criterions, Xs[clip], ys[clip], lay0_out[clip])
+        game_lay_acc.append(clip_lay_acc)
+        game_lay_loss.append(clip_lay_loss)
+        
+    game_lay_loss = np.array(game_lay_loss)
+    game_lay_acc = np.array(game_lay_acc)
+    running_loss = np.mean(game_lay_loss[:, -1])
+    # print('epoch loss', running_loss)
+    assert game_lay_loss.shape[0]==C
+    return np.mean(game_lay_loss, axis=0), np.mean(game_lay_acc, axis=0)
+    
 def smartMean(acc_arr):
     acc_arr = np.array(acc_arr)
     acc_arr = acc_arr[acc_arr!=-1]
@@ -310,3 +348,20 @@ def select_free_gpu():
        gpu_stats = gpustat.GPUStatCollection.new_query()
        mem.append(gpu_stats.jsonify()["gpus"][i]["memory.used"])
    return str(gpus[np.argmin(mem)])
+
+
+def NNInitFromFile(game_id, split_id, epoch, w):
+    # N players, D raw feature dim
+    player_nns, criterions = [], []
+    N = nplayers[game_id]
+    D = feat_dim[method]
+    tag_sz = N+1
+    for i in range(N):
+        fnm = '{}/model/{}_{}_{}_{}.pt'.format(root_dir, game_id, i, split_id, epoch)
+        # print(fnm)
+        model = NN(D, tag_sz)
+        model.load_state_dict(torch.load(fnm))
+        player_nns.append(model.cuda())
+        # player-dependent weights
+        criterions.append(nn.CrossEntropyLoss(weight=w[i]))
+    return player_nns, criterions
