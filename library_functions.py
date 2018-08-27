@@ -13,12 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
-np.set_printoptions(threshold=np.nan)
-torch.manual_seed(1)
-np.random.seed(0)
-# cuda_avail = torch.cuda.is_available()
-cuda_avail = True
-print('cuda', torch.cuda.is_available())
+import argparse
+import gpustat
 
 # split test clips, leave 1 sec out
 def genTestCVIdx(game_data, leave_m=5):
@@ -39,6 +35,37 @@ def genTestCVIdx(game_data, leave_m=5):
         train_idx = np.hstack((np.arange(5*fps,i),np.arange(0,5*fps)))
         tra_tes_idx.append((train_idx, test_idx))
         assert np.intersect1d(train_idx, test_idx).shape[0] == 0
+    return tra_tes_idx
+
+# splot test clips, time_granularity controls how many frames to test, gap controls #seconds of gap
+def TgapTestCVIdx(game_data, gap=0, time_granularity = 10):
+    fps = 30
+    #time_granularity = 10
+    step = time_granularity
+    tra_tes_idx = []
+    if gap<4:
+        for i in range(0+step, 5*fps, step):
+            tra_idx_ed = i - gap*fps
+            if tra_idx_ed <= 0:
+                continue
+            tes_idx = np.arange(i,i+time_granularity)
+            tra_idx = np.hstack((np.arange(0,tra_idx_ed), np.arange(5*fps,10*fps)))
+            tra_tes_idx.append((tra_idx, tes_idx))
+            assert np.intersect1d(tra_idx, tes_idx).shape[0] == 0
+        for i in range(5*fps+step, 10*fps, step):
+            tra_idx_ed = i - gap*fps
+            if tra_idx_ed <= 5*fps:
+                continue
+            tes_idx = np.arange(i,i+time_granularity)
+            tra_idx = np.hstack((np.arange(5*fps,tra_idx_ed), np.arange(0, 5*fps)))
+            tra_tes_idx.append((tra_idx, tes_idx))
+            assert np.intersect1d(tra_idx, tes_idx).shape[0] == 0
+    else:
+        # train on one 5sec clip, test on any sec of another clip
+        for i in range(0, 5*fps, step):
+            tra_tes_idx.append((np.arange(5*fps, 10*fps), np.arange(i,i+time_granularity)))
+        for i in range(5*fps,10*fps,step):
+            tra_tes_idx.append((np.arange(0, 5*fps), np.arange(i,i+time_granularity)))
     return tra_tes_idx
 
 # compute ACC for each 10 frm
@@ -76,7 +103,7 @@ def warmStart(X,y, tes_X):
 #         print(np.nonzero(np.max(tes_y_prob, axis=1) > 0.9))
     y_init = np.concatenate(y_init,axis=0)
     tes_y_init = np.concatenate(tes_y_init,axis=0)
-    return torch.Tensor(y_init,dtype=torch.float), torch.Tensor(tes_y_init, dtype=torch.float)
+    return torch.tensor(y_init,dtype=torch.float), torch.tensor(tes_y_init, dtype=torch.float)
 
 # one vs one training
 def OVOTrain(X,y):
@@ -149,10 +176,10 @@ def NNInit(N,D,w):
         params = params + list(player_nns[i].parameters())
         # player-dependent weights
         criterions.append(nn.CrossEntropyLoss(weight=w[i]))
-    opt = optim.Adam(params, lr=LR, weight_decay=DECAY)
+    opt = optim.Adam(params, lr=LR, weight_decay=WEIGHT_DECAY)
     return player_nns, criterions, opt
 
-def train(Xs, ys, w, layer_0_outs):
+def train(Xs, ys, w, layer_0_outs, tes_X, tes_y, tes_lay0_out):
     torch.manual_seed(1)
     # N players, L time length, D feature dim
     N,D = Xs[0].size()[0], Xs[0].size()[2]
@@ -202,12 +229,26 @@ def train(Xs, ys, w, layer_0_outs):
             opt.step()
 
             # print(clip_loss.item())
-            running_loss += clip_loss.item()
+            running_loss += clip_loss.item()/NITER
+
+        # save model for this epoch
+        for ply in range(N):
+            filepath = '{}/model/{}_{}_{}_{}.pt'.format(root_dir, game_id, ply, split_id, epoch)
+            torch.save(player_nns[ply].state_dict(), filepath)
+
+        #normalize by #clips
+        running_loss /= C
         # early stop
-        if running_loss < STOP_L:
-            break
-        print('epoch',epoch,'loss', running_loss)
+        # if running_loss < STOP_L:
+        #     break
+        # print('epoch',epoch,'loss', running_loss)
+        # tra_acc = []
+        # for clip in range(C):
+        #     tra_acc.append(evalNNCC(player_nns, Xs[clip].cuda(), ys[clip].cuda(), layer_0_outs[clip].cuda()))
+        # print('tra acc', np.mean(np.array(tra_acc),axis=0))
+        # print('test acc',evalNNCC(player_nns, tes_X,tes_y,tes_lay0_out))
         epoch_loss_lst.append(running_loss)
+        np.savetxt('{}/tra/epoch_losses_{}_{}.txt'.format(root_dir, game_id, split_id),np.array(epoch_loss_lst), fmt='%.4f')
     return player_nns, epoch_loss_lst
 
 
@@ -252,119 +293,20 @@ def evalNNCC(player_nns, X,y,lay_0_out):
         last_lay_out = eval_layerForward(player_nns, last_lay_out, X, y)
         for ply in range(N):
             ply_lay_acc.append(computeNFrmACC(last_lay_out[ply].cpu().numpy(), y[ply].cpu().numpy()))
-        game_lay_acc.append(np.mean(np.array(ply_lay_acc)))
+        game_lay_acc.append(smartMean(ply_lay_acc))
     return game_lay_acc
 
-##### MAIN #####
-
-feat_dict = {0:'m0_gaze1',1:'m1_gaze1',2:'m2_gaze1',3:'m1_gaze2',4:'m2_gaze2'}
-LR=0.1
-DECAY=0
-STOP_L=1
-NEPOCH=100
-NITER = 5
-
-for method in [4]:
-    # load feat,label,clip_start_tag of introduction and test clips (two 5sec clips)
-    with open('feat/anno_intro_detc_fail_0/{}_game_frm_feat_dict.json'.format(feat_dict[method])) as f:
-        game_intro_feat_dict = json.load(f)
-    with open('feat/test_feat_with_gt_detec_fail/{}_game_frm_feat_dict.json'.format(feat_dict[method])) as f:
-        game_dict = json.load(f)
-    # for game in ['003SB','002ISR','004UMD','005NTU','006AZ']:
-    for game in ['003SB']:
-        # data[i,j,:-2] is feature of player i, time j, data[i,j,-2] is label,
-        # data[i,j,-1] > 0 iff this is start of a clip, data[i,:,-1] is equal for every i
-        data = game_dict[game]
-        intro_data = game_intro_feat_dict[game]
-        print intro_data
-
-        tra_tes_idxs = genTestCVIdx(np.array(data), 1)
-        intro_data_tensor = torch.Tensor(intro_data) #, dtype=torch.float)
-        data_tensor = torch.Tensor(data) #, dtype=torch.float)
-        game_acc = []
-        print('start training and testing of game:', game)
-        for tra_idx, tes_idx in tra_tes_idxs:
-            # training X=[intro_X, tra_X], testing tes_X
-            intro_X, intro_y, intro_clip_st = intro_data_tensor[:,:,:-2],intro_data_tensor[:,:,-2].long(), intro_data_tensor[:,:,-1].long()
-            tra_X, tra_y, tra_clip_st = data_tensor[:,tra_idx,:-2], data_tensor[:,tra_idx,-2].long(), data_tensor[:,tra_idx,-1].long()
-            tes_X, tes_y, tes_clip_st = data_tensor[:,tes_idx,:-2], data_tensor[:,tes_idx,-2].long(), data_tensor[:,tes_idx,-1].long()
-
-            X, y, clip_st = torch.cat((intro_X, tra_X), 1), torch.cat((intro_y, tra_y),1), torch.cat((intro_clip_st, tra_clip_st),1)
-            print('data sizes', intro_X.size(), tra_X.size(), X.size(), intro_y.size(), tra_y.size(), y.size(), tes_X.size(), tes_y.size())
-            # train player-based RFs and get predicted probs for all data
-            #lay0_out(i,j,:) is player i's predicted probs at time j
-            lay0_out, tes_lay0_out = warmStart(X,y,tes_X)
-            # split data to clips, clip_st is the same for all players
-            Xs,ys,layer_0_outs = splitToCLips(X,y,lay0_out,clip_st[0].numpy())
-            # train
-            player_nns, train_loss_lst = train(Xs, ys, getWgt(intro_y), layer_0_outs)
-            # test
-            fold_game_acc = evalNNCC(player_nns, tes_X, tes_y, tes_lay0_out)
-            game_acc.append(fold_game_acc)
-            print('tes', fold_game_acc)
-        game_acc = np.array(game_acc)
-        print(np.mean(game_acc, axis=0))
+def smartMean(acc_arr):
+    acc_arr = np.array(acc_arr)
+    acc_arr = acc_arr[acc_arr!=-1]
+    assert acc_arr.shape[0]>0
+    return np.mean(acc_arr)
 
 
-
-# In[10]:
-
-
-# # ply_lastlay_outs: N*L*(N+1)
-# def constructCollect(ply_lastlay_outs, ply, ply_clip_st=None, intro_L=0):
-#     ply_lastlay_outs = F.softmax(ply_lastlay_outs, dim=2)
-#     N,L,D = ply_lastlay_outs.size()
-#     # option 1, using all player's outputs
-# #     other_outputs = player_outputs
-#     # option 2, without cur player
-#     other_outputs = torch.cat((ply_lastlay_outs[:ply], ply_lastlay_outs[ply+1:]), dim=0)
-#     # method1, concate
-# #     relational_x = np.swapaxes(other_outputs, 0,1).reshape((L,-1))
-#     # method2, avg
-#     relational_x = torch.mean(other_outputs, dim=0)
-# #     if ply_clip_st is not None:
-#         # add last time last layer's output
-# #         last_t_last_l = consLastTimeOutput(ply_lastlay_outs[ply], ply_clip_st, N, intro_L)
-# #         return torch.cat([relational_x, ply_lastlay_outs[ply], last_t_last_l],dim=1)
-#     return relational_x
-
-
-# In[11]:
-
-
-# def consLastTimeOutput(ply_lastlay_out, clip_st, Nplayer, intro_L):
-#     t0_out = torch.ones(Nplayer+1)/(Nplayer+1.)
-#     assert clip_st[0]>0
-#     last_time_out = torch.empty_like(ply_lastlay_out)
-#     for i in range(last_time_output.size()[0]):
-#         # for start fram of a clip, set prob as uniform
-#         if clip_st[i]>0:
-#             last_time_out[i,:] = t0_out
-#         else:
-#             last_time_out[i,:] = ply_lastlay_out[i-1,:]
-#     return last_time_output
-
-
-# In[12]:
-
-
-# with open('../synced_feats/anno_intro_feat/game_ply_talk_prob.json') as f:
-#     game_intro_talk_dict = json.load(f)
-# with open('../synced_feats/test_feat/game_ply_talk_prob.json') as f:
-#     game_talk_dict = json.load(f)
-# def addOthersTalkProb(intro_prob, intro_data, tes_prob, tes_data):
-#     N,L,D = intro_data.shape
-#     tes_L = tes_data.shape[1]
-# #     print(intro_prob.shape, L, tes_prob.shape,tes_L)
-#     intro_talk_prob = np.zeros((N,L,N))
-#     tes_talk_prob = np.zeros((N, tes_L, N))
-#     for ply in range(N):
-#         intro_talk_prob[ply,:,:] = intro_prob.T.copy()
-#         # don't include self talk prob!
-#         intro_talk_prob[ply,:,ply] = 0
-#         tes_talk_prob[ply,:,:] = tes_prob.T.copy()
-#         tes_talk_prob[ply,:,ply] = 0
-#     intro_data = np.concatenate([intro_data[:,:,:-2], intro_talk_prob, intro_data[:,:,-2:]], axis=2)
-#     tes_data = np.concatenate([tes_data[:,:,:-2], tes_talk_prob, tes_data[:,:,-2:]], axis=2)
-#     return intro_data, tes_data
-
+def select_free_gpu():
+   mem = []
+   gpus = list(set([0,1,2,3]))
+   for i in gpus:
+       gpu_stats = gpustat.GPUStatCollection.new_query()
+       mem.append(gpu_stats.jsonify()["gpus"][i]["memory.used"])
+   return str(gpus[np.argmin(mem)])
