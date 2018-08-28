@@ -6,7 +6,7 @@ parser.add_argument('--split_id', required=True, type=int, help='Game name')
 parser.add_argument('--epochs', default=49, type=int, help='Number of epochs across the whole dataset')
 parser.add_argument('--time_granularity', default=10, type=int, help='Number of frames used for training and testing')
 parser.add_argument('--layer', default=3, type=int, help='Number of layers in the model')
-
+parser.add_argument('--synthe_name', default='none', type=str, help='name of synthetic intro order json')
 args = parser.parse_args()
 
 if args.game_id >= len(GAMES):
@@ -30,6 +30,7 @@ root_dir = './data_%dfrm/'% args.time_granularity
 game_id = args.game_id
 game = GAMES[game_id]
 split_id = args.split_id
+synthe_name = args.synthe_name
 print('gameid',game_id, 'splitid', split_id)
 
 NEPOCH = int(args.epochs)
@@ -49,6 +50,13 @@ for method in [4]:
 
     data = game_dict[game]
     intro_data = game_intro_feat_dict[game]
+    #synthe order
+    if synthe_name !='none':
+        with open('feat/anno_intro_detc_fail_0/{}.json'.format(synthe_name)) as f:
+            order_clipst = np.array(json.load(f)[game]).astype(np.int_)
+        intro_data = np.array(intro_data)
+        intro_data = intro_data[:,order_clipst[0],:]
+        intro_data[:,:,-1]=order_clipst[1]
 
     # tra_tes_idxs = genTestCVIdx(np.array(data), 1)
     tra_tes_idxs = TgapTestCVIdx(np.array(data), 0, time_granularity)
