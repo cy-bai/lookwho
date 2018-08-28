@@ -182,7 +182,7 @@ class NN(nn.Module):
 class RNN(nn.Module):
     def __init__(self, rawfeat_dim, tag_dim):
         super(RNN, self).__init__()
-        self.rnn = nn.RNNCell(rawfeat_dim + 2 * tag_dim, tag_dim, nonlinearity='relu')
+        self.rnn = nn.RNNCell(rawfeat_dim + 2 * tag_dim, tag_dim)
     def forward(self, rawfeat, recur, collect, temp):
         input = torch.cat([rawfeat, collect, temp]).unsqueeze(0)
         output = self.rnn(input, recur.unsqueeze(0))
@@ -352,9 +352,7 @@ def evalTrain(player_nns, criterions, Xs, ys, lay0_out, NITER):
     C = len(Xs)
     game_lay_acc = []
     game_lay_loss = []
-    
     running_loss = 0.
-    C=5
     for clip in range(C):
         clip_lay_loss, clip_lay_acc = evalNNCC(player_nns, criterions, Xs[clip], ys[clip], lay0_out[clip], NITER)
         game_lay_acc.append(clip_lay_acc)
@@ -363,7 +361,7 @@ def evalTrain(player_nns, criterions, Xs, ys, lay0_out, NITER):
     game_lay_loss = np.array(game_lay_loss)
     game_lay_acc = np.array(game_lay_acc)
     running_loss = np.mean(game_lay_loss[:, -1])
-    print('epoch loss', running_loss)
+    # print('epoch loss', running_loss)
     assert game_lay_loss.shape[0]==C
     return np.mean(game_lay_loss, axis=0), np.mean(game_lay_acc, axis=0)
     
