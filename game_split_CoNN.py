@@ -1,20 +1,20 @@
 from library_functions import *
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--game_id', required=True, type=str, help='Game name')
+parser.add_argument('--game_id', required=True, type=int, help='Game name')
 parser.add_argument('--split_id', required=True, type=int, help='Game name')
 parser.add_argument('--epochs', default=49, type=int, help='Number of epochs across the whole dataset')
 parser.add_argument('--time_granularity', default=10, type=int, help='Number of frames used for training and testing')
 parser.add_argument('--layer', default=3, type=int, help='Number of layers in the model')
 
-if args.game_id >= len(GAMES):
-   print "GAME ID IS NOT VALID. EXITING"
-   sys.exit(0)
-
 args = parser.parse_args()
 
+if args.game_id >= len(GAMES):
+   print("GAME ID IS NOT VALID. EXITING")
+   sys.exit(0)
+
 gpu = select_free_gpu()
-print "gpu", gpu
+print("gpu", gpu)
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
@@ -26,17 +26,12 @@ np.random.seed(0)
 # print('version',torch.__version__)
 #print('cuda', torch.cuda.is_available())
 
-# print command line arguments
-# args: gameid [0-4], splitid [0-9]
-root_dir = 'data_%dfrm/'% args.time_granularity
+root_dir = './data_%dfrm/'% args.time_granularity
 game_id = args.game_id
 game = GAMES[game_id]
 split_id = args.split_id
 print('gameid',game_id, 'splitid', split_id)
 
-LR=1e-3
-WEIGHT_DECAY=1e-5
-STOP_L=0.5
 NEPOCH = int(args.epochs)
 NITER = int(args.layer)
 time_granularity=int(args.time_granularity)
@@ -75,16 +70,8 @@ for method in [4]:
     # split data to clips, clip_st is the same for all players
     Xs,ys,layer_0_outs = splitToCLips(X,y,lay0_out,clip_st[0].numpy())
     # train
-    player_nns, train_loss_lst = train(Xs, ys, getWgt(intro_y), layer_0_outs, tes_X, tes_y, tes_lay0_out)
-
-    # test
-    # fold_game_acc = evalNNCC(player_nns, tes_X, tes_y, tes_lay0_out)
-    # game_acc.append(fold_game_acc)
-    # print('tes', fold_game_acc)
-    
-    # game_acc = np.array(game_acc)
-    # print(np.mean(game_acc, axis=0))
-
+    player_nns, train_loss_lst = train(Xs, ys, getWgt(intro_y), layer_0_outs, tes_X, tes_y, tes_lay0_out,
+                                       root_dir, game_id, split_id, NEPOCH, NITER)
 
 
 # In[10]:

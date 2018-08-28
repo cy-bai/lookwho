@@ -1,14 +1,15 @@
 from library_functions import *
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--game_id', required=True, type=str, help='Game name')
+parser.add_argument('--game_id', required=True, type=int, help='Game name')
 parser.add_argument('--split_id', required=True, type=int, help='Game name')
 parser.add_argument('--epochs', default=49, type=int, help='Number of epochs across the whole dataset')
 parser.add_argument('--time_granularity', default=10, type=int, help='Number of frames used for training and testing')
 parser.add_argument('--layer', default=3, type=int, help='Number of layers in the model')
+args = parser.parse_args()
 
 gpu = select_free_gpu()
-print "gpu", gpu
+print("gpu", gpu)
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = gpu
 
@@ -23,7 +24,7 @@ np.random.seed(0)
 ##### MAIN #####
 # print command line arguments
 # args: gameid [0-4], splitid [0-9]
-root_dir = 'data_%dfrm/' % args.time_granularity
+root_dir = './data_%dfrm/' % args.time_granularity
 game_id = args.game_id
 game = GAMES[game_id]
 split_id = int(args.split_id)
@@ -37,7 +38,7 @@ NITER = int(args.layer)
 time_granularity=int(args.time_granularity)
 
 
-for method in [4]:
+for method in [METHOD]:
     # load feat,label,clip_start_tag of introduction and test clips (two 5sec clips)
     with open('feat/anno_intro_detc_fail_0/{}_game_frm_feat_dict.json'.format(feat_dict[method])) as f:
         game_intro_feat_dict = json.load(f)
@@ -57,9 +58,8 @@ for method in [4]:
     
     fold_tra_accs = np.zeros((NEPOCH, NITER))
     fold_tes_accs, fold_tra_loss, fold_tes_loss= fold_tra_accs.copy(), fold_tra_accs.copy(), fold_tra_accs.copy()
-    #for id in [split_id]:
-    print('start eval of game-split:', game,id)
-    tra_idx, tes_idx = tra_tes_idxs[id]
+    print('start eval of game-split:', game_id)
+    tra_idx, tes_idx = tra_tes_idxs[split_id]
     # training X=[intro_X, tra_X], testing tes_X
     intro_X, intro_y, intro_clip_st = intro_data_tensor[:,:,:-2],intro_data_tensor[:,:,-2].long(), intro_data_tensor[:,:,-1].long()
     tra_X, tra_y, tra_clip_st = data_tensor[:,tra_idx,:-2], data_tensor[:,tra_idx,-2].long(), data_tensor[:,tra_idx,-1].long()
@@ -76,17 +76,17 @@ for method in [4]:
     
     for epoch in range(NEPOCH):
        print('epoch',epoch)
-       player_nns, criterions = NNInitFromFile(game_id, id, epoch, w)
-       loss,acc = evalTrain(player_nns, criterions, Xs, ys, layer_0_outs)
+       player_nns, criterions = NNInitFromFile(root_dir, game_id, split_id, epoch, w)
+       loss,acc = evalTrain(player_nns, criterions, Xs, ys, layer_0_outs, NITER)
        fold_tra_accs[epoch,:]=np.array(acc)
        fold_tra_loss[epoch,:]=np.array(loss)
-       loss,acc = evalNNCC(player_nns, criterions, tes_X, tes_y, tes_lay0_out)
+       loss,acc = evalNNCC(player_nns, criterions, tes_X, tes_y, tes_lay0_out, NITER)
        fold_tes_accs[epoch,:]=np.array(acc)
        fold_tes_loss[epoch,:]=np.array(loss)
        # print(id,epoch,'traacc',fold_tra_accs[epoch])
        # print(id,epoch,'tesacc',fold_tes_accs[epoch])
        
-       np.savetxt('{}/eval/{}_{}_tra_acc.txt'.format(root_dir, game_id, id), fold_tra_accs, fmt='%.4f')
-       np.savetxt('{}/eval/{}_{}_tes_acc.txt'.format(root_dir, game_id, id), fold_tes_accs, fmt='%.4f')
-       np.savetxt('{}/eval/{}_{}_tra_loss.txt'.format(root_dir, game_id, id), fold_tra_loss, fmt='%.4f')
-       np.savetxt('{}/eval/{}_{}_tes_loss.txt'.format(root_dir, game_id, id), fold_tes_loss, fmt='%.4f')
+       np.savetxt('{}/eval/{}_{}_tra_acc.txt'.format(root_dir, game_id, split_id), fold_tra_accs, fmt='%.4f')
+       np.savetxt('{}/eval/{}_{}_tes_acc.txt'.format(root_dir, game_id, split_id), fold_tes_accs, fmt='%.4f')
+       np.savetxt('{}/eval/{}_{}_tra_loss.txt'.format(root_dir, game_id, split_id), fold_tra_loss, fmt='%.4f')
+       np.savetxt('{}/eval/{}_{}_tes_loss.txt'.format(root_dir, game_id, split_id), fold_tes_loss, fmt='%.4f')

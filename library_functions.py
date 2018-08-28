@@ -16,9 +16,13 @@ from torch.autograd import Variable
 import argparse
 import gpustat
 
+LR=1e-3
+WEIGHT_DECAY=1e-5
+STOP_L=0.5
 GAMES = ['003SB','002ISR','004UMD','005NTU','006AZ']
 NPLAYERS = [6,7,7,8,7]
 FEAT_DIM = [2,7,5,10,8]
+METHOD=4
 feat_dict = {0:'m0_gaze1',1:'m1_gaze1',2:'m2_gaze1',3:'m1_gaze2',4:'m2_gaze2'}
 
 # split test clips, leave 1 sec out
@@ -48,7 +52,7 @@ def TgapTestCVIdx(game_data, gap=0, time_granularity = 10):
     #time_granularity = 10
     step = time_granularity
     tra_tes_idx = []
-    if gap<4:
+    if gap<14:
         for i in range(0+step, 5*fps, step):
             tra_idx_ed = i - gap*fps
             if tra_idx_ed <= 0:
@@ -65,12 +69,16 @@ def TgapTestCVIdx(game_data, gap=0, time_granularity = 10):
             tra_idx = np.hstack((np.arange(5*fps,tra_idx_ed), np.arange(0, 5*fps)))
             tra_tes_idx.append((tra_idx, tes_idx))
             assert np.intersect1d(tra_idx, tes_idx).shape[0] == 0
-    else:
-        # train on one 5sec clip, test on any sec of another clip
-        for i in range(0, 5*fps, step):
-            tra_tes_idx.append((np.arange(5*fps, 10*fps), np.arange(i,i+time_granularity)))
-        for i in range(5*fps,10*fps,step):
-            tra_tes_idx.append((np.arange(0, 5*fps), np.arange(i,i+time_granularity)))
+
+        # start of a clip
+        tra_tes_idx.append((np.arange(0, 5 * fps), np.arange(5*fps, 5*fps + time_granularity)))
+        tra_tes_idx.append((np.arange(5 * fps, 10 * fps), np.arange(0, time_granularity)))
+
+    # else:
+    #     # train on one 5sec clip, test on any sec of another clip
+    #     for i in range(0, 5*fps, step):
+    #         tra_tes_idx.append((np.arange(5*fps, 10*fps), np.arange(i,i+time_granularity)))
+    #     for i in range(5*fps,10*fps,step):
     return tra_tes_idx
 
 # compute ACC for each 10 frm
@@ -145,7 +153,6 @@ def getWgt(y):
 #     player_weights = torch.tensor(player_weights / torch.sum(player_weights), dtype=torch.float)
     return player_weights
 
-
 def splitToCLips(X,y,layer_0_out,np_clip_st):
     start_idxs = np.where(np_clip_st>0)[0]
     assert start_idxs[0] == 0
@@ -172,19 +179,30 @@ class NN(nn.Module):
         output = self.i2o(concat)
         return output
 
+class RNN(nn.Module):
+    def __init__(self, rawfeat_dim, tag_dim):
+        super(RNN, self).__init__()
+        self.rnn = nn.RNNCell(rawfeat_dim + 2 * tag_dim, tag_dim, nonlinearity='relu')
+    def forward(self, rawfeat, recur, collect, temp):
+        input = torch.cat([rawfeat, collect, temp]).unsqueeze(0)
+        output = self.rnn(input, recur.unsqueeze(0))
+        return output
+
 def NNInit(N,D,w):
     # N players, D raw feature dim
     tag_sz = N+1
     player_nns, params, criterions = [], [], []
     for i in range(N):
-        player_nns.append(NN(D, tag_sz).cuda())
+        # player_nns.append(NN(D, tag_sz).cuda())
+        player_nns.append(RNN(D,tag_sz).cuda())
         params = params + list(player_nns[i].parameters())
         # player-dependent weights
         criterions.append(nn.CrossEntropyLoss(weight=w[i]))
     opt = optim.Adam(params, lr=LR, weight_decay=WEIGHT_DECAY)
     return player_nns, criterions, opt
 
-def train(Xs, ys, w, layer_0_outs, tes_X, tes_y, tes_lay0_out):
+def train(Xs, ys, w, layer_0_outs, tes_X, tes_y, tes_lay0_out,
+          root_dir, game_id, split_id, NEPOCH, NITER):
     torch.manual_seed(1)
     # N players, L time length, D feature dim
     N,D = Xs[0].size()[0], Xs[0].size()[2]
@@ -230,17 +248,24 @@ def train(Xs, ys, w, layer_0_outs, tes_X, tes_y, tes_lay0_out):
                 last_lay_out = this_lay_out
             # back prop
             clip_loss = sum(loss_lst)
+            # print('before')
+            # for ply in range(N):
+            #     for name, param in player_nns[ply].named_parameters():
+            #         print(name, param.data)
             clip_loss.backward()
             opt.step()
+            # print('after')
+            # for ply in range(N):
+            #     for name, param in player_nns[ply].named_parameters():
+            #         print(name, param.data)
 
             # print(clip_loss.item())
-            running_loss += clip_loss.item()/NITER
 
+            running_loss += clip_loss.item()/NITER
+        # print('epoch ',epoch, running_loss)
         # save model for this epoch
         for ply in range(N):
-            filepath = '{}/model/{}_{}_{}_{}.pt'.format(root_dir, game_id, ply, split_id, epoch)
-            torch.save(player_nns[ply].state_dict(), filepath)
-            # ADD FUNCTION
+            saveModel(root_dir, game_id, ply, split_id, player_nns[ply], opt, epoch, NITER)
 
         #normalize by #clips
         running_loss /= C
@@ -257,6 +282,16 @@ def train(Xs, ys, w, layer_0_outs, tes_X, tes_y, tes_lay0_out):
         np.savetxt('{}/tra/epoch_losses_{}_{}.txt'.format(root_dir, game_id, split_id),np.array(epoch_loss_lst), fmt='%.4f')
     return player_nns, epoch_loss_lst
 
+
+def saveModel(root_dir, game_id, ply, split_id, model, opt, epoch, NITER):
+    state = {
+        'epoch': epoch,
+        'state_dict': model.state_dict(),
+        'optimizer': opt.state_dict(),
+        'n_layers': NITER
+    }
+    fnm = '{}/model/{}_{}_{}_{}.pt'.format(root_dir, game_id, ply, split_id, epoch)
+    torch.save(state, fnm)
 
 # lastlay_outs: N*L*(N+1)
 # ply's collective feature (construct from other players)
@@ -286,9 +321,7 @@ def eval_layerForward(player_nns, last_lay_out, clip_X, clip_y):
             this_lay_out[ply,t,:] = F.softmax(out, dim=1)[0]
     return this_lay_out
 
-
-
-def evalNNCC(player_nns, criterions, X,y,lay_0_out):
+def evalNNCC(player_nns, criterions, X,y,lay_0_out, NITER):
     # print('eval', X.size(), y.size())
     X,y = X.cuda(),y.cuda()
     N,L,D=X.size()
@@ -305,14 +338,13 @@ def evalNNCC(player_nns, criterions, X,y,lay_0_out):
             sure_msk = y[ply, :] >= 0
             if sure_msk.long().sum().item() > 0:
                 ply_lay_loss.append(criterions[ply](last_lay_out[ply, sure_msk, :], y[ply, sure_msk]))
-            for ply in range(N):
                 ply_lay_acc.append(computeNFrmACC(last_lay_out[ply].cpu().numpy(), y[ply].cpu().numpy()))
 
         game_lay_acc.append(smartMean(ply_lay_acc))
         game_lay_loss.append(np.mean(np.array(ply_lay_loss)))
     return game_lay_loss, game_lay_acc
 
-def evalTrain(player_nns, criterions, Xs, ys, lay0_out):
+def evalTrain(player_nns, criterions, Xs, ys, lay0_out, NITER):
     torch.manual_seed(1)
     # N players, L time length, D feature dim
     # N, D = Xs[0].size()[0], Xs[0].size()[2]
@@ -322,15 +354,16 @@ def evalTrain(player_nns, criterions, Xs, ys, lay0_out):
     game_lay_loss = []
     
     running_loss = 0.
+    C=5
     for clip in range(C):
-        clip_lay_loss, clip_lay_acc = evalNNCC(player_nns, criterions, Xs[clip], ys[clip], lay0_out[clip])
+        clip_lay_loss, clip_lay_acc = evalNNCC(player_nns, criterions, Xs[clip], ys[clip], lay0_out[clip], NITER)
         game_lay_acc.append(clip_lay_acc)
         game_lay_loss.append(clip_lay_loss)
         
     game_lay_loss = np.array(game_lay_loss)
     game_lay_acc = np.array(game_lay_acc)
     running_loss = np.mean(game_lay_loss[:, -1])
-    # print('epoch loss', running_loss)
+    print('epoch loss', running_loss)
     assert game_lay_loss.shape[0]==C
     return np.mean(game_lay_loss, axis=0), np.mean(game_lay_acc, axis=0)
     
@@ -339,7 +372,6 @@ def smartMean(acc_arr):
     acc_arr = acc_arr[acc_arr!=-1]
     assert acc_arr.shape[0]>0
     return np.mean(acc_arr)
-
 
 def select_free_gpu():
    mem = []
@@ -350,17 +382,19 @@ def select_free_gpu():
    return str(gpus[np.argmin(mem)])
 
 
-def NNInitFromFile(game_id, split_id, epoch, w):
+def NNInitFromFile(root_dir, game_id, split_id, epoch, w):
     # N players, D raw feature dim
     player_nns, criterions = [], []
-    N = nplayers[game_id]
-    D = feat_dim[method]
+    N = NPLAYERS[game_id]
+    D = FEAT_DIM[METHOD]
     tag_sz = N+1
     for i in range(N):
         fnm = '{}/model/{}_{}_{}_{}.pt'.format(root_dir, game_id, i, split_id, epoch)
+        print(fnm)
         # print(fnm)
-        model = NN(D, tag_sz)
-        model.load_state_dict(torch.load(fnm))
+        model = RNN(D, tag_sz)
+        state = torch.load(fnm)
+        model.load_state_dict(state['state_dict'])
         player_nns.append(model.cuda())
         # player-dependent weights
         criterions.append(nn.CrossEntropyLoss(weight=w[i]))
