@@ -6,6 +6,8 @@ from math import atan2
 import sklearn.ensemble, sklearn.metrics,sklearn.svm
 from sklearn.model_selection import StratifiedKFold
 from collections import Counter
+import matplotlib
+matplotlib.use('agg')
 from matplotlib import pyplot as plt
 from scipy.stats import mode
 import torch
@@ -16,7 +18,7 @@ from torch.autograd import Variable
 import argparse
 import gpustat
 
-LR=1e-3
+LR=1e-2
 WEIGHT_DECAY=1e-5
 STOP_L=0.5
 GAMES = ['003SB','002ISR','004UMD','005NTU','006AZ']
@@ -388,7 +390,7 @@ def NNInitFromFile(root_dir, game_id, split_id, epoch, w):
     tag_sz = N+1
     for i in range(N):
         fnm = '{}/model/{}_{}_{}_{}.pt'.format(root_dir, game_id, i, split_id, epoch)
-        print(fnm)
+        # print(fnm)
         # print(fnm)
         model = RNN(D, tag_sz)
         state = torch.load(fnm)

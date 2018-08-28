@@ -1,24 +1,20 @@
-import numpy as np
-import os,sys
-import matplotlib
-matplotlib.use('agg')
-from matplotlib import pyplot as plt
-
+from library_functions import *
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--game_id', required=True, type=str, help='Game name')
-parser.add_argument('--split_id', required=True, type=int, help='Game name')
+parser.add_argument('--game_id', required=True, type=int, help='Game name')
+parser.add_argument('--split_id', required=True, type=int, help='Number of splits')
 parser.add_argument('--epochs', default=49, type=int, help='Number of epochs across the whole dataset')
 parser.add_argument('--time_granularity', default=10, type=int, help='Number of frames used for training and testing')
 parser.add_argument('--layer', default=3, type=int, help='Number of layers in the model')
 
+args = parser.parse_args()
 
 #### MAIN #####
 # print command line arguments
 # args: gameid [0-4], splitid [0-9]
 root_dir = 'data_%dfrm/' % args.time_granularity
 game_id = args.game_id
-split_id = args.split_id
+nsplits = args.split_id
 print('gameid',game_id)
 
 #nplayers = [6,7,7,8,7]
@@ -32,19 +28,19 @@ NEPOCH = int(args.epochs)
 NITER = int(args.layer)
 time_granularity=int(args.time_granularity)
 
-fold_tra_accs = np.zeros((10, NEPOCH, NITER))
-fold_tes_accs = np.zeros((10, NEPOCH, NITER))
-fold_tra_loss = np.zeros((10, NEPOCH, NITER))
-fold_tes_loss = np.zeros((10, NEPOCH, NITER))
-for split_id in range(10):
+fold_tra_accs = np.zeros((nsplits, NEPOCH, NITER))
+fold_tes_accs = np.zeros((nsplits, NEPOCH, NITER))
+fold_tra_loss = np.zeros((nsplits, NEPOCH, NITER))
+fold_tes_loss = np.zeros((nsplits, NEPOCH, NITER))
+for split_id in range(nsplits):
     fold_tra_accs[split_id, :, :] = np.loadtxt('{}/eval/{}_{}_tra_acc.txt'.format(root_dir, game_id, split_id))
     fold_tes_accs[split_id, :, :] = np.loadtxt('{}/eval/{}_{}_tes_acc.txt'.format(root_dir, game_id, split_id))
     fold_tra_loss[split_id, :, :] = np.loadtxt('{}/eval/{}_{}_tra_loss.txt'.format(root_dir, game_id, split_id))
     fold_tes_loss[split_id, :, :] = np.loadtxt('{}/eval/{}_{}_tes_loss.txt'.format(root_dir, game_id, split_id))
 
-game = games[game_id]
+game = GAMES[game_id]
 # plot
-plot_epochs = 40
+plot_epochs = NEPOCH
 tra_acc = np.mean(fold_tra_accs, axis=0)[:plot_epochs]
 tes_acc = np.mean(fold_tes_accs, axis=0)[:plot_epochs]
 tra_loss = np.mean(fold_tra_loss, axis=0)[:plot_epochs]

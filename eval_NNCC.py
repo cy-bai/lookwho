@@ -52,7 +52,8 @@ for method in [METHOD]:
     data = game_dict[game]
     intro_data = game_intro_feat_dict[game]
 
-    tra_tes_idxs = genTestCVIdx(np.array(data), 1)
+    # tra_tes_idxs = genTestCVIdx(np.array(data), 1)
+    tra_tes_idxs = TgapTestCVIdx(np.array(data), 0, time_granularity)
     intro_data_tensor = torch.tensor(intro_data, dtype=torch.float)
     data_tensor = torch.tensor(data, dtype=torch.float)
     
@@ -75,7 +76,7 @@ for method in [METHOD]:
     w = getWgt(intro_y).cuda()
     
     for epoch in range(NEPOCH):
-       print('epoch',epoch)
+       # print('epoch',epoch)
        player_nns, criterions = NNInitFromFile(root_dir, game_id, split_id, epoch, w)
        loss,acc = evalTrain(player_nns, criterions, Xs, ys, layer_0_outs, NITER)
        fold_tra_accs[epoch,:]=np.array(acc)
